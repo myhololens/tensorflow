@@ -346,7 +346,10 @@ class EventListenerBaseServicer(debug_service_pb2_grpc.EventListenerServicer):
       if self._server_started:
         raise ValueError("Server has already started running")
 
-      self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+      no_max_message_sizes = [("grpc.max_receive_message_length", -1),
+                              ("grpc.max_send_message_length", -1)]
+      self.server = grpc.server(futures.ThreadPoolExecutor(max_workers=10),
+                                options=no_max_message_sizes)
       debug_service_pb2_grpc.add_EventListenerServicer_to_server(self,
                                                                  self.server)
       self.server.add_insecure_port("[::]:%d" % self._server_port)
@@ -458,3 +461,36 @@ class EventListenerBaseServicer(debug_service_pb2_grpc.EventListenerServicer):
         `debug_op` as a `str`.
     """
     return list(self._gated_grpc_debug_watches)
+
+  def SendTracebacks(self, request, context):
+    """Base implementation of the handling of SendTracebacks calls.
+
+    The base implementation does nothing with the incoming request.
+    Override in an implementation of the server if necessary.
+
+    Args:
+      request: A `CallTraceback` proto, containing information about the
+        type (e.g., graph vs. eager execution) and source-code traceback of the
+        call and (any) associated `tf.Graph`s.
+      context: Server context.
+
+    Returns:
+      A `EventReply` proto.
+    """
+    return debug_service_pb2.EventReply()
+
+  def SendSourceFiles(self, request, context):
+    """Base implementation of the handling of SendSourceFiles calls.
+
+    The base implementation does nothing with the incoming request.
+    Override in an implementation of the server if necessary.
+
+    Args:
+      request: A `DebuggedSourceFiles` proto, containing the path, content, size
+        and last-modified timestamp of source files.
+      context: Server context.
+
+    Returns:
+      A `EventReply` proto.
+    """
+    return debug_service_pb2.EventReply()

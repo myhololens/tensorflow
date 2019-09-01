@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
+#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/public/session.h"
@@ -96,11 +97,11 @@ void CheckRegressionSignature(const Signatures& signatures,
   const string output_name = regression_signature.output().tensor_name();
 
   // Validate the half plus two behavior.
-  std::vector<string> serialized_examples;
+  std::vector<tstring> serialized_examples;
   for (float x : {0, 1, 2, 3}) {
     serialized_examples.push_back(MakeSerializedExample(x));
   }
-  Tensor input = test::AsTensor<string>(serialized_examples, TensorShape({4}));
+  Tensor input = test::AsTensor<tstring>(serialized_examples, TensorShape({4}));
   std::vector<Tensor> outputs;
   TF_ASSERT_OK(
       bundle.session->Run({{input_name, input}}, {output_name}, {}, &outputs));
@@ -145,13 +146,13 @@ void CheckSessionBundle(const string& export_path,
   ASSERT_EQ(2, path_outputs.size());
   // Validate the two asset file tensors are set by the init_op and include the
   // base_path and asset directory.
-  test::ExpectTensorEqual<string>(
-      test::AsTensor<string>({io::JoinPath(asset_path, "hello1.txt")},
-                             TensorShape({})),
+  test::ExpectTensorEqual<tstring>(
+      test::AsTensor<tstring>({io::JoinPath(asset_path, "hello1.txt")},
+                              TensorShape({})),
       path_outputs[0]);
-  test::ExpectTensorEqual<string>(
-      test::AsTensor<string>({io::JoinPath(asset_path, "hello2.txt")},
-                             TensorShape({})),
+  test::ExpectTensorEqual<tstring>(
+      test::AsTensor<tstring>({io::JoinPath(asset_path, "hello2.txt")},
+                              TensorShape({})),
       path_outputs[1]);
 
   Signatures signatures;
@@ -239,8 +240,8 @@ TEST(LoadSessionBundleFromPath, BasicTestRunOptionsThreadPoolInvalid) {
 
   // Expect failed session run calls with invalid run-options.
   EXPECT_FALSE(status.ok());
-  EXPECT_TRUE(StringPiece(status.error_message())
-                  .contains("Invalid inter_op_thread_pool: 2"))
+  EXPECT_TRUE(absl::StrContains(status.error_message(),
+                                "Invalid inter_op_thread_pool: 2"))
       << status.error_message();
 }
 
@@ -314,8 +315,8 @@ TEST_F(SessionBundleTest, ServingGraphEmpty) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(StringPiece(status_.error_message())
-                  .contains("Expected exactly one serving GraphDef"))
+  EXPECT_TRUE(absl::StrContains(status_.error_message(),
+                                "Expected exactly one serving GraphDef"))
       << status_.error_message();
 }
 
@@ -330,8 +331,9 @@ TEST_F(SessionBundleTest, ServingGraphAnyIncorrectType) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(StringPiece(status_.error_message())
-                  .contains("Expected Any type_url for: tensorflow.GraphDef"))
+  EXPECT_TRUE(
+      absl::StrContains(status_.error_message(),
+                        "Expected Any type_url for: tensorflow.GraphDef"))
       << status_.error_message();
 }
 
@@ -347,7 +349,7 @@ TEST_F(SessionBundleTest, ServingGraphAnyValueCorrupted) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(StringPiece(status_.error_message()).contains("Failed to unpack"))
+  EXPECT_TRUE(absl::StrContains(status_.error_message(), "Failed to unpack"))
       << status_.error_message();
 }
 
@@ -362,9 +364,9 @@ TEST_F(SessionBundleTest, AssetFileAnyIncorrectType) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(
-      StringPiece(status_.error_message())
-          .contains("Expected Any type_url for: tensorflow.serving.AssetFile"))
+  EXPECT_TRUE(absl::StrContains(
+      status_.error_message(),
+      "Expected Any type_url for: tensorflow.serving.AssetFile"))
       << status_.error_message();
 }
 
@@ -380,7 +382,7 @@ TEST_F(SessionBundleTest, AssetFileAnyValueCorrupted) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(StringPiece(status_.error_message()).contains("Failed to unpack"))
+  EXPECT_TRUE(absl::StrContains(status_.error_message(), "Failed to unpack"))
       << status_.error_message();
 }
 
@@ -395,8 +397,8 @@ TEST_F(SessionBundleTest, InitOpTooManyValues) {
   });
   status_ = LoadSessionBundleFromPath(options_, path, &bundle_);
   EXPECT_FALSE(status_.ok());
-  EXPECT_TRUE(StringPiece(status_.error_message())
-                  .contains("Expected exactly one serving init op"))
+  EXPECT_TRUE(absl::StrContains(status_.error_message(),
+                                "Expected exactly one serving init op"))
       << status_.error_message();
 }
 

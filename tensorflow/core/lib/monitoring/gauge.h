@@ -13,12 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_
+#ifndef TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_
+#define TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_
+
+// clang-format off
+// Required for IS_MOBILE_PLATFORM
+#include "tensorflow/core/platform/platform.h"
+// clang-format on
 
 // We replace this implementation with a null implementation for mobile
 // platforms.
-#include "tensorflow/core/platform/platform.h"
 #ifdef IS_MOBILE_PLATFORM
 #include "tensorflow/core/lib/monitoring/mobile_gauge.h"
 #else
@@ -27,6 +31,7 @@ limitations under the License.
 #include <atomic>
 #include <map>
 
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/monitoring/collection_registry.h"
 #include "tensorflow/core/lib/monitoring/metric_def.h"
 #include "tensorflow/core/platform/macros.h"
@@ -86,8 +91,29 @@ class GaugeCell<int64> {
   TF_DISALLOW_COPY_AND_ASSIGN(GaugeCell);
 };
 
+// Explicit specialization of GaugeCell<bool>. Compared to the primary
+// template, it uses atomic values as opposed to mutex. This class is
+// thread-safe.
+template <>
+class GaugeCell<bool> {
+ public:
+  explicit GaugeCell(bool value) : value_(value) {}
+  ~GaugeCell() {}
+
+  // Atomically sets the value.
+  void Set(bool value);
+
+  // Retrieves the current value.
+  bool value() const;
+
+ private:
+  std::atomic<bool> value_;
+
+  TF_DISALLOW_COPY_AND_ASSIGN(GaugeCell);
+};
+
 // A stateful class for updating a gauge-like metric. Allowed ValueType are
-// int64 and string.
+// int64, string and bool.
 //
 // This class encapsulates a set of values (or a single value for a label-less
 // metric). Each value is identified by a tuple of labels. The class allows the
@@ -117,6 +143,9 @@ class Gauge {
   //
   // auto* integer_gauge = Gauge<int64, 0>::New("/tensorflow/integer_gauge",
   //   "Integer gauge")
+  //
+  // auto* bool_gauge = Gauge<bool, 0>::New("/tensorflow/bool_gauge",
+  //   "Bool gauge")
   template <typename... MetricDefArgs>
   static Gauge* New(MetricDefArgs&&... metric_def_args);
 
@@ -124,6 +153,8 @@ class Gauge {
   // already present.
   template <typename... Labels>
   GaugeCell<ValueType>* GetCell(const Labels&... labels) LOCKS_EXCLUDED(mu_);
+
+  Status GetStatus() { return status_; }
 
  private:
   explicit Gauge(
@@ -137,9 +168,18 @@ class Gauge {
               for (const auto& cell : cells_) {
                 metric_collector.CollectValue(cell.first, cell.second.value());
               }
-            })) {}
+            })) {
+    if (registration_handle_) {
+      status_ = Status::OK();
+    } else {
+      status_ = Status(tensorflow::error::Code::ALREADY_EXISTS,
+                       "Another metric with the same name already exists.");
+    }
+  }
 
   mutable mutex mu_;
+
+  Status status_;
 
   // The metric definition. This will be used to identify the metric when we
   // register it for collection.
@@ -172,13 +212,18 @@ inline void GaugeCell<int64>::Set(int64 value) { value_ = value; }
 
 inline int64 GaugeCell<int64>::value() const { return value_; }
 
+inline void GaugeCell<bool>::Set(bool value) { value_ = value; }
+
+inline bool GaugeCell<bool>::value() const { return value_; }
+
 template <typename ValueType, int NumLabels>
 template <typename... MetricDefArgs>
 Gauge<ValueType, NumLabels>* Gauge<ValueType, NumLabels>::New(
     MetricDefArgs&&... metric_def_args) {
   static_assert(std::is_same<ValueType, int64>::value ||
-                    std::is_same<ValueType, string>::value,
-                "Gauge only allows int64 and string types.");
+                    std::is_same<ValueType, string>::value ||
+                    std::is_same<ValueType, bool>::value,
+                "Gauge only allows bool, int64, and string types.");
   return new Gauge<ValueType, NumLabels>(
       MetricDef<MetricKind::kGauge, ValueType, NumLabels>(
           std::forward<MetricDefArgs>(metric_def_args)...));
@@ -212,4 +257,4 @@ GaugeCell<ValueType>* Gauge<ValueType, NumLabels>::GetCell(
 }  // namespace tensorflow
 
 #endif  // IS_MOBILE_PLATFORM
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_
+#endif  // TENSORFLOW_CORE_LIB_MONITORING_GAUGE_H_

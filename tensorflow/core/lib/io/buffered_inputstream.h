@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_LIB_IO_BUFFERED_INPUTSTREAM_H_
-#define TENSORFLOW_LIB_IO_BUFFERED_INPUTSTREAM_H_
+#ifndef TENSORFLOW_CORE_LIB_IO_BUFFERED_INPUTSTREAM_H_
+#define TENSORFLOW_CORE_LIB_IO_BUFFERED_INPUTSTREAM_H_
 
 #include "tensorflow/core/lib/io/inputstream_interface.h"
 #include "tensorflow/core/platform/file_system.h"
@@ -41,7 +41,7 @@ class BufferedInputStream : public InputStreamInterface {
 
   ~BufferedInputStream() override;
 
-  Status ReadNBytes(int64 bytes_to_read, string* result) override;
+  Status ReadNBytes(int64 bytes_to_read, tstring* result) override;
 
   Status SkipNBytes(int64 bytes_to_skip) override;
 
@@ -79,7 +79,8 @@ class BufferedInputStream : public InputStreamInterface {
   //
   // Note: the amount of memory used by this function call is unbounded, so only
   // use in ops that expect that behavior.
-  Status ReadAll(string* result);
+  template <typename T>
+  Status ReadAll(T* result);
 
   Status Reset() override;
 
@@ -89,7 +90,7 @@ class BufferedInputStream : public InputStreamInterface {
 
   InputStreamInterface* input_stream_;  // not owned.
   size_t size_;                         // buffer size.
-  string buf_;                          // the buffer itself.
+  tstring buf_;                         // the buffer itself.
   // buf_[pos_, limit_) holds the valid "read ahead" data in the file.
   size_t pos_ = 0;    // current position in buf_.
   size_t limit_ = 0;  // just past the end of valid data in buf_.
@@ -104,4 +105,4 @@ class BufferedInputStream : public InputStreamInterface {
 }  // namespace io
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_LIB_IO_BUFFERED_INPUTSTREAM_H_
+#endif  // TENSORFLOW_CORE_LIB_IO_BUFFERED_INPUTSTREAM_H_

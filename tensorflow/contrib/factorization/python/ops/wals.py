@@ -77,6 +77,7 @@ class _SweepHook(session_run_hook.SessionRunHook):
       logging.info("SweepHook running init op.")
       sess.run(self._init_op)
     if is_sweep_done:
+      logging.info("SweepHook starting the next sweep.")
       sess.run(self._switch_op)
     is_row_sweep = sess.run(self._is_row_sweep_var)
     if is_sweep_done or not self._is_initialized:
@@ -89,6 +90,22 @@ class _SweepHook(session_run_hook.SessionRunHook):
     logging.info("Next fit step starting.")
     return session_run_hook.SessionRunArgs(
         fetches=[self._row_train_op if is_row_sweep else self._col_train_op])
+
+
+class _IncrementGlobalStepHook(session_run_hook.SessionRunHook):
+  """Hook that increments the global step."""
+
+  def __init__(self):
+    global_step = training_util.get_global_step()
+    if global_step:
+      self._global_step_incr_op = state_ops.assign_add(
+          global_step, 1, name="global_step_incr").op
+    else:
+      self._global_step_incr_op = None
+
+  def before_run(self, run_context):
+    if self._global_step_incr_op:
+      run_context.session.run(self._global_step_incr_op)
 
 
 class _StopAtSweepHook(session_run_hook.SessionRunHook):
@@ -166,7 +183,7 @@ def _wals_factorization_model_function(features, labels, mode, params):
 
   # TRAIN mode:
   if mode == model_fn.ModeKeys.TRAIN:
-    # Training consists of the folowing ops (controlled using a SweepHook).
+    # Training consists of the following ops (controlled using a SweepHook).
     # Before a row sweep:
     #   row_update_prep_gramian_op
     #   initialize_row_update_op
@@ -199,7 +216,7 @@ def _wals_factorization_model_function(features, labels, mode, params):
         name=WALSMatrixFactorization.LOSS,
         collections=[ops.GraphKeys.GLOBAL_VARIABLES])
     # The root weighted squared error =
-    #   \sqrt( \sum_{i,j} w_ij * (a_ij - r_ij)^2 / \sum_{i,j} w_ij )
+    #   \\(\sqrt( \sum_{i,j} w_ij * (a_ij - r_ij)^2 / \sum_{i,j} w_ij )\\)
     rwse_var = variable_scope.variable(
         0.,
         trainable=False,
@@ -210,14 +227,6 @@ def _wals_factorization_model_function(features, labels, mode, params):
     summary.scalar("root_weighted_squared_error", rwse_var)
     summary.scalar("completed_sweeps", completed_sweeps_var)
 
-    # Increments global step.
-    global_step = training_util.get_global_step()
-    if global_step:
-      global_step_incr_op = state_ops.assign_add(
-          global_step, 1, name="global_step_incr").op
-    else:
-      global_step_incr_op = control_flow_ops.no_op()
-
     def create_axis_ops(sp_input, num_items, update_fn, axis_name):
       """Creates book-keeping and training ops for a given axis.
 
@@ -226,7 +235,7 @@ def _wals_factorization_model_function(features, labels, mode, params):
         num_items: An integer, the total number of items of this axis.
         update_fn: A function that takes one argument (`sp_input`), and that
         returns a tuple of
-          * new_factors: A flot Tensor of the factor values after update.
+          * new_factors: A float Tensor of the factor values after update.
           * update_op: a TensorFlow op which updates the factors.
           * loss: A float Tensor, the unregularized loss.
           * reg_loss: A float Tensor, the regularization loss.
@@ -246,9 +255,6 @@ def _wals_factorization_model_function(features, labels, mode, params):
             collections=[ops.GraphKeys.GLOBAL_VARIABLES],
             trainable=False,
             name="processed_" + axis_name)
-      reset_processed_items_op = state_ops.assign(
-          processed_items, processed_items_init,
-          name="reset_processed_" + axis_name)
       _, update_op, loss, reg, sum_weights = update_fn(sp_input)
       input_indices = sp_input.indices[:, 0]
       with ops.control_dependencies([
@@ -264,13 +270,12 @@ def _wals_factorization_model_function(features, labels, mode, params):
         with ops.control_dependencies([update_processed_items]):
           is_sweep_done = math_ops.reduce_all(processed_items)
           axis_train_op = control_flow_ops.group(
-              global_step_incr_op,
               state_ops.assign(is_sweep_done_var, is_sweep_done),
               state_ops.assign_add(
                   completed_sweeps_var,
                   math_ops.cast(is_sweep_done, dtypes.int32)),
               name="{}_sweep_train_op".format(axis_name))
-      return reset_processed_items_op, axis_train_op
+      return processed_items.initializer, axis_train_op
 
     reset_processed_rows_op, row_train_op = create_axis_ops(
         input_rows,
@@ -296,7 +301,8 @@ def _wals_factorization_model_function(features, labels, mode, params):
     sweep_hook = _SweepHook(
         is_row_sweep_var, is_sweep_done_var, init_op,
         row_prep_ops, col_prep_ops, row_train_op, col_train_op, switch_op)
-    training_hooks = [sweep_hook]
+    global_step_hook = _IncrementGlobalStepHook()
+    training_hooks = [sweep_hook, global_step_hook]
     if max_sweeps is not None:
       training_hooks.append(_StopAtSweepHook(max_sweeps))
 
@@ -371,64 +377,68 @@ class WALSMatrixFactorization(estimator.Estimator):
 
   WALS (Weighted Alternating Least Squares) is an algorithm for weighted matrix
   factorization. It computes a low-rank approximation of a given sparse (n x m)
-  matrix A, by a product of two matrices, U * V^T, where U is a (n x k) matrix
-  and V is a (m x k) matrix. Here k is the rank of the approximation, also
-  called the embedding dimension. We refer to U as the row factors, and V as the
-  column factors.
+  matrix `A`, by a product of two matrices, `U * V^T`, where `U` is a (n x k)
+  matrix and `V` is a (m x k) matrix. Here k is the rank of the approximation,
+  also called the embedding dimension. We refer to `U` as the row factors, and
+  `V` as the column factors.
   See tensorflow/contrib/factorization/g3doc/wals.md for the precise problem
   formulation.
 
-  The training proceeds in sweeps: during a row_sweep, we fix V and solve for U.
-  During a column sweep, we fix U and solve for V. Each one of these problems is
-  an unconstrained quadratic minimization problem and can be solved exactly (it
-  can also be solved in mini-batches, since the solution decouples nicely).
+  The training proceeds in sweeps: during a row_sweep, we fix `V` and solve for
+  `U`. During a column sweep, we fix `U` and solve for `V`. Each one of these
+  problems is an unconstrained quadratic minimization problem and can be solved
+  exactly (it can also be solved in mini-batches, since the solution decouples
+  across rows of each matrix).
   The alternating between sweeps is achieved by using a hook during training,
   which is responsible for keeping track of the sweeps and running preparation
   ops at the beginning of each sweep. It also updates the global_step variable,
   which keeps track of the number of batches processed since the beginning of
   training.
   The current implementation assumes that the training is run on a single
-  machine, and will fail if config.num_worker_replicas is not equal to one.
-  Training is done by calling self.fit(input_fn=input_fn), where input_fn
+  machine, and will fail if `config.num_worker_replicas` is not equal to one.
+  Training is done by calling `self.fit(input_fn=input_fn)`, where `input_fn`
   provides two tensors: one for rows of the input matrix, and one for rows of
   the transposed input matrix (i.e. columns of the original matrix). Note that
   during a row sweep, only row batches are processed (ignoring column batches)
   and vice-versa.
   Also note that every row (respectively every column) of the input matrix
   must be processed at least once for the sweep to be considered complete. In
-  particular, training will not make progress if input_fn does not generate some
-  rows.
+  particular, training will not make progress if some rows are not generated by
+  the `input_fn`.
 
-  For prediction, given a new set of input rows A' (e.g. new rows of the A
-  matrix), we compute a corresponding set of row factors U', such that U' * V^T
-  is a good approximation of A'. We call this operation a row projection. A
-  similar operation is defined for columns.
-  Projection is done by calling self.get_projections(input_fn=input_fn), where
-  input_fn satisfies the constraints given below.
+  For prediction, given a new set of input rows `A'`, we compute a corresponding
+  set of row factors `U'`, such that `U' * V^T` is a good approximation of `A'`.
+  We call this operation a row projection. A similar operation is defined for
+  columns. Projection is done by calling
+  `self.get_projections(input_fn=input_fn)`, where `input_fn` satisfies the
+  constraints given below.
 
-  The input functions must satisfy the following constraints: Calling input_fn
-  must return a tuple (features, labels) where labels is None, and features is
-  a dict containing the following keys:
+  The input functions must satisfy the following constraints: Calling `input_fn`
+  must return a tuple `(features, labels)` where `labels` is None, and
+  `features` is a dict containing the following keys:
+
   TRAIN:
-    - WALSMatrixFactorization.INPUT_ROWS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_ROWS`: float32 SparseTensor (matrix).
       Rows of the input matrix to process (or to project).
-    - WALSMatrixFactorization.INPUT_COLS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_COLS`: float32 SparseTensor (matrix).
       Columns of the input matrix to process (or to project), transposed.
+
   INFER:
-    - WALSMatrixFactorization.INPUT_ROWS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_ROWS`: float32 SparseTensor (matrix).
       Rows to project.
-    - WALSMatrixFactorization.INPUT_COLS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_COLS`: float32 SparseTensor (matrix).
       Columns to project.
-    - WALSMatrixFactorization.PROJECT_ROW: Boolean Tensor. Whether to project
+    * `WALSMatrixFactorization.PROJECT_ROW`: Boolean Tensor. Whether to project
       the rows or columns.
-    - WALSMatrixFactorization.PROJECTION_WEIGHTS (Optional): float32 Tensor
+    * `WALSMatrixFactorization.PROJECTION_WEIGHTS` (Optional): float32 Tensor
       (vector). The weights to use in the projection.
+
   EVAL:
-    - WALSMatrixFactorization.INPUT_ROWS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_ROWS`: float32 SparseTensor (matrix).
       Rows to project.
-    - WALSMatrixFactorization.INPUT_COLS: float32 SparseTensor (matrix).
+    * `WALSMatrixFactorization.INPUT_COLS`: float32 SparseTensor (matrix).
       Columns to project.
-    - WALSMatrixFactorization.PROJECT_ROW: Boolean Tensor. Whether to project
+    * `WALSMatrixFactorization.PROJECT_ROW`: Boolean Tensor. Whether to project
       the rows or columns.
   """
   # Keys to be used in model_fn
@@ -463,7 +473,7 @@ class WALSMatrixFactorization(estimator.Estimator):
                max_sweeps=None,
                model_dir=None,
                config=None):
-    """Creates a model for matrix factorization using the WALS method.
+    r"""Creates a model for matrix factorization using the WALS method.
 
     Args:
       num_rows: Total number of rows for input matrix.
@@ -484,11 +494,11 @@ class WALSMatrixFactorization(estimator.Estimator):
           and the problem simplifies to ALS. Note that, in this case,
           col_weights must also be set to "None".
         - List of lists of non-negative scalars, of the form
-          [[w_0, w_1, ...], [w_k, ... ], [...]],
+          \\([[w_0, w_1, ...], [w_k, ... ], [...]]\\),
           where the number of inner lists equal to the number of row factor
           shards and the elements in each inner list are the weights for the
           rows of that shard. In this case,
-          w_ij = unonbserved_weight + row_weights[i] * col_weights[j].
+          \\(w_ij = unonbserved_weight + row_weights[i] * col_weights[j]\\).
         - A non-negative scalar: This value is used for all row weights.
           Note that it is allowed to have row_weights as a list and col_weights
           as a scalar, or vice-versa.

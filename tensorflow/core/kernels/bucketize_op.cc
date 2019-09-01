@@ -25,10 +25,8 @@ limitations under the License.
 
 namespace tensorflow {
 
-using thread::ThreadPool;
-
-typedef Eigen::ThreadPoolDevice CPUDevice;
-typedef Eigen::GpuDevice GPUDevice;
+using CPUDevice = Eigen::ThreadPoolDevice;
+using GPUDevice = Eigen::GpuDevice;
 
 namespace functor {
 
@@ -49,6 +47,7 @@ struct BucketizeFunctor<CPUDevice, T> {
     return Status::OK();
   }
 };
+
 }  // namespace functor
 
 template <typename Device, typename T>
@@ -87,7 +86,7 @@ REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define REGISTER_KERNEL(T)                                         \
   REGISTER_KERNEL_BUILDER(                                         \
       Name("Bucketize").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
@@ -98,6 +97,6 @@ REGISTER_KERNEL(int64);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

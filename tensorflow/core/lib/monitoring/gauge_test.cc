@@ -87,6 +87,36 @@ TEST(GaugeOfStringValue, GetCell) {
   EXPECT_EQ("bar", same_cell->value());
 }
 
+auto* bool_gauge =
+    Gauge<bool, 0>::New("/tensorflow/test/bool_gauge", "Gauge of bool value.");
+
+TEST(GaugeOfBoolValue, InitializedWithFalseValue) {
+  EXPECT_EQ(false, bool_gauge->GetCell()->value());
+}
+
+TEST(GaugeOfBoolValue, GetCell) {
+  auto* cell = bool_gauge->GetCell();
+  EXPECT_EQ(false, cell->value());
+
+  cell->Set(true);
+  EXPECT_EQ(true, cell->value());
+
+  auto* same_cell = bool_gauge->GetCell();
+  EXPECT_EQ(true, cell->value());
+
+  same_cell->Set(false);
+  EXPECT_EQ(false, cell->value());
+  EXPECT_EQ(false, same_cell->value());
+}
+
+TEST(LabeledGaugeTest, SameName) {
+  auto* same_gauge = Gauge<int64, 1>::New("/tensorflow/test/gauge_with_labels",
+                                          "Gauge with one label.", "MyLabel");
+  EXPECT_TRUE(gauge_with_labels->GetStatus().ok());
+  EXPECT_FALSE(same_gauge->GetStatus().ok());
+  delete same_gauge;
+}
+
 }  // namespace
 }  // namespace monitoring
 }  // namespace tensorflow

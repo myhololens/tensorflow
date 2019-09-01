@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_STRIDED_SLICE_OP_IMPL_H_
-#define TENSORFLOW_KERNELS_STRIDED_SLICE_OP_IMPL_H_
+#ifndef TENSORFLOW_CORE_KERNELS_STRIDED_SLICE_OP_IMPL_H_
+#define TENSORFLOW_CORE_KERNELS_STRIDED_SLICE_OP_IMPL_H_
 
 // Functor definition for StridedSliceOp, must be compilable by nvcc.
 
@@ -22,11 +22,13 @@ limitations under the License.
 #include "tensorflow/core/kernels/strided_slice_op.h"
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/register_types_traits.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/bounds_check.h"
+#include "tensorflow/core/framework/variant.h"
+#include "tensorflow/core/framework/variant_encode_decode.h"
 #include "tensorflow/core/kernels/dense_update_functor.h"
 #include "tensorflow/core/kernels/ops_util.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -84,16 +86,16 @@ void HandleStridedSliceCase(OpKernelContext* context,
 
   gtl::InlinedVector<int64, 4> processing_dims = processing_shape.dim_sizes();
   if (is_simple_slice) {
-    gtl::InlinedVector<int64, 4> sizes(begin.size());
+    Eigen::DSizes<Eigen::DenseIndex, NDIM> begin_di;
+    Eigen::DSizes<Eigen::DenseIndex, NDIM> sizes_di;
     for (int i = 0; i < NDIM; ++i) {
-      sizes[i] = end[i] - begin[i];
+      begin_di[i] = begin[i];
+      sizes_di[i] = end[i] - begin[i];
     }
-    const TensorShape final_shape = result->shape();
-    CHECK(result->CopyFrom(*result, processing_shape));
-    const Tensor input = context->input(0);
-    functor::Slice<Device, T, NDIM>()(
-        context->eigen_device<Device>(), result, input, begin, sizes);
-    CHECK(result->CopyFrom(*result, final_shape));
+    functor::Slice<Device, Proxy, NDIM>()(
+        context->eigen_device<Device>(),
+        result->bit_casted_shaped<Proxy, NDIM>(processing_dims),
+        context->input(0).bit_casted_tensor<Proxy, NDIM>(), begin_di, sizes_di);
   } else {
     Eigen::DSizes<Eigen::DenseIndex, NDIM> begin_di;
     Eigen::DSizes<Eigen::DenseIndex, NDIM> end_di;
@@ -177,10 +179,9 @@ class HandleStridedSliceAssignCase<Device, T, 0> {
   }
 };
 
-// NODE(aselle): according to bsteiner, we need this because otherwise
+// NOTE(aselle): according to bsteiner, we need this because otherwise
 // nvcc instantiates templates that are invalid. strided_slice_op_gpu.cu
-// handles instantiates externally. It is important that this is done#
-
+// handles instantiates externally. It is important that this is done
 // before the HandleXXCase's are instantiated to avoid duplicate
 // specialization errors.
 
@@ -196,9 +197,10 @@ class HandleStridedSliceAssignCase<Device, T, 0> {
   extern template struct StridedSlice<GPUDevice, T, NDIM>;         \
   template <>                                                      \
   void Slice<GPUDevice, T, NDIM>::operator()(                      \
-      const GPUDevice& d, Tensor* output, const Tensor& input,     \
-      const gtl::ArraySlice<int64>& slice_indices,                 \
-      const gtl::ArraySlice<int64>& slice_sizes);                  \
+      const GPUDevice& d, typename TTypes<T, NDIM>::Tensor output, \
+      typename TTypes<T, NDIM>::ConstTensor input,                 \
+      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& indices,       \
+      const Eigen::DSizes<Eigen::DenseIndex, NDIM>& sizes);        \
   extern template struct Slice<GPUDevice, T, NDIM>;                \
   template <>                                                      \
   void StridedSliceGrad<GPUDevice, T, NDIM>::operator()(           \
@@ -228,7 +230,7 @@ class HandleStridedSliceAssignCase<Device, T, 0> {
 
 // Dimension 0 only instantiates some functors. So we only need
 // to prevent ones defined by PREVENT_INSTANTIATE_DIM0_ONLY
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #if STRIDED_SLICE_INSTANTIATE_DIM == 0
 #define PREVENT_INSTANTIATE(T, NDIM) PREVENT_INSTANTIATE_DIM0_ONLY(T, NDIM)
 #else
@@ -274,7 +276,7 @@ class HandleStridedSliceAssignCase<Device, T, 0> {
 #define DECLARE_FOR_N_GPU(T) \
   INSTANTIATE(GPUDevice, T, STRIDED_SLICE_INSTANTIATE_DIM)
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 TF_CALL_GPU_PROXY_TYPES(PREVENT_FOR_N_GPU);
 TF_CALL_complex64(PREVENT_FOR_N_GPU);
 TF_CALL_complex128(PREVENT_FOR_N_GPU);
@@ -282,11 +284,15 @@ TF_CALL_complex128(PREVENT_FOR_N_GPU);
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_FOR_N_GPU);
 TF_CALL_complex64(DECLARE_FOR_N_GPU);
 TF_CALL_complex128(DECLARE_FOR_N_GPU);
+TF_CALL_bool(DECLARE_FOR_N_GPU);
+TF_CALL_int8(DECLARE_FOR_N_GPU);
 DECLARE_FOR_N_GPU(int32);
-#endif  // END GOOGLE_CUDA
+DECLARE_FOR_N_GPU(int64);
+#endif  // END GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 TF_CALL_ALL_TYPES(DECLARE_FOR_N_CPU);
-DECLARE_FOR_N_CPU(bfloat16);
+TF_CALL_uint32(DECLARE_FOR_N_CPU);
+TF_CALL_uint64(DECLARE_FOR_N_CPU);
 
 #ifdef TENSORFLOW_USE_SYCL
 #define PREVENT_FOR_N_SYCL(T) \
@@ -298,9 +304,10 @@ DECLARE_FOR_N_CPU(bfloat16);
 TF_CALL_SYCL_PROXY_TYPES(PREVENT_FOR_N_SYCL);
 TF_CALL_GPU_NUMBER_TYPES_NO_HALF(DECLARE_FOR_N_SYCL);
 DECLARE_FOR_N_SYCL(int32);
+DECLARE_FOR_N_SYCL(int64);
 
 #undef DECLARE_FOR_N_SYCL
-#endif // TENSORFLOW_USE_SYCL
+#endif  // TENSORFLOW_USE_SYCL
 
 #undef INSTANTIATE
 #undef DECLARE_FOR_N_CPU
@@ -309,4 +316,4 @@ DECLARE_FOR_N_SYCL(int32);
 }  // end namespace tensorflow
 
 #endif  // END STRIDED_SLICE_INSTANTIATE_DIM
-#endif  // TENSORFLOW_KERNELS_SLICE_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_STRIDED_SLICE_OP_IMPL_H_

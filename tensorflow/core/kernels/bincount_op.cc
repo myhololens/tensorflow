@@ -97,8 +97,9 @@ class BincountOp : public OpKernel {
     const Tensor& weights_t = ctx->input(2);
 
     int32 size = size_tensor.scalar<int32>()();
-    OP_REQUIRES(ctx, size >= 0, errors::InvalidArgument(
-                                    "size (", size, ") must be non-negative"));
+    OP_REQUIRES(
+        ctx, size >= 0,
+        errors::InvalidArgument("size (", size, ") must be non-negative"));
 
     const auto arr = arr_t.flat<int32>();
     const auto weights = weights_t.flat<T>();
@@ -119,7 +120,7 @@ class BincountOp : public OpKernel {
 TF_CALL_NUMBER_TYPES(REGISTER_KERNELS);
 #undef REGISTER_KERNELS
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #define REGISTER_KERNELS(type)                            \
   REGISTER_KERNEL_BUILDER(Name("Bincount")                \
@@ -132,6 +133,6 @@ TF_CALL_int32(REGISTER_KERNELS);
 TF_CALL_float(REGISTER_KERNELS);
 #undef REGISTER_KERNELS
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // end namespace tensorflow
